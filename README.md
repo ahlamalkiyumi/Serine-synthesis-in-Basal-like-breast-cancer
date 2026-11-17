@@ -77,6 +77,84 @@ SFXN2	-1.04	-1.62
 SFXN1	-0.65	-0.48
 
 
+HER2-enriched tumors lie between Basal-like and luminal for PHGDH, PSAT1 and MTHFD1L. SHMT1 was not upregulated in Basal-like tumors (slightly lower), so there was no sign of cytosolic compensation, and SHMT2 was not reduced.
+
+#### 3. Single-cell resolution
+- The serine synthesis score was highest in cancer epithelial cells (median per-patient score 0.100) and at or below background in immune and stromal cell types.
+- In cancer cells, PHGDH and PSAT1 were higher in TNBC than in ER+ patients (p = 0.001 and < 0.001; 8 vs 9 patients) and highest in the four PAM50 Basal-like patients.
+- The importer pattern was not confirmed at single-cell level: SFXN2 did not differ between groups, and SFXN1 is expressed in T cells and other cell types, so its bulk signal is mixed.
+  
+#### 4. Gene amplification does not explain it
+High-level amplification in 1,070 TCGA breast tumors (cBioPortal): PHGDH 2.1% (23 tumors), PSPH 1.3%, MTHFD1L 1.1%, PSAT1 0.2% (2 tumors). The expression difference is present across nearly all Basal-like tumors, so amplification can account for at most a small fraction of it. Subtype-specific frequencies and low-level gains were not assessed.
+
+#### 5. Confounder analysis
+Basal vs Luminal B gap in the serine score after adjustment:
+Adjustment	SCAN-B	TCGA
+None	1.49 SD	1.45 SD
++ proliferation	1.36 (91%)	1.38 (96%)
++ hypoxia	1.30 (87%)	1.33 (92%)
++ MYC targets	1.20 (81%)	1.26 (87%)
++ ATF4 targets	1.14 (77%)	1.15 (79%)
++ 
+Within Basal tumors, the joint model gave similar coefficients in both cohorts: ATF4 targets 0.286 (SCAN-B) and 0.285 (TCGA), proliferation 0.226 and 0.174, hypoxia not significant in either. The MTHFD2 and SHMT2 gaps lost more after proliferation adjustment (62% and 75% kept in SCAN-B), indicating that part of their elevation is proliferation-linked, while MTHFD1L kept 96%.
+
+Glycolytic gene expression was also higher in Basal tumors, but only about a third of that gap remained after adjusting for proliferation and hypoxia, and there was no independent coupling between glycolysis and serine synthesis within Basal tumors. The data are therefore described as metabolic reprogramming and are not presented as evidence for a Warburg-type program.
+
+#### 6. What tracks serine synthesis inside Basal tumors
+In the WGCNA network built on SCAN-B Basal tumors, PHGDH, PSAT1, PSPH, MTHFD1L, MTHFD2, SHMT2, ATF4, ASNS and MKI67 fell in the same large module (1,094 genes), whose most central members were cell-cycle genes. SFXN1 and SFXN2 were unassigned.
+
+After regressing out proliferation, the genes most associated with the serine score were an amino-acid stress-response set:
+
+Gene	Partial rho, SCAN-B	Partial rho, TCGA
+- ASNS	0.58	0.48
+- CHAC1	0.41	0.52
+- SHMT2	0.42	0.41
+- MTHFD2	0.32	0.35
+- ATF4	0.37	0.26
+- GPT2	0.35	0.28
+- MTHFD1L	0.12	0.16
+- MKI67	-0.08	-0.12
+
+Of the 40 genes with the highest SCAN-B values, 38 were positive in TCGA and 20 were above 0.2. In TCGA, aminoacyl-tRNA synthetases (GARS, SARS, MARS), SESN2, SLC7A5 and SLC3A2 also ranked near the top.
+
+#### 7. Single-cell coupling of serine synthesis and the stress program
+- The stress-response score was not specific to cancer cells: cancer cells did not score higher than myeloid cells, and plasmablasts and T cells scored higher.
+- Inside cancer cells, the per-patient correlation between the serine and stress scores (proliferation removed) was higher in TNBC than in ER+ patients (median rho 0.13 vs 0.03, Mann-Whitney p = 0.021, n = 8 vs 9) and heterogeneous across tumors. The pooled regression gave an extra slope in TNBC of +0.20 (95% CI +0.06 to +0.34), but this estimate rests on 17 patients and its clustered standard errors are likely too small.
+- Stress-response expression in non-tumor cell types did not correlate with the cancer-cell serine score across patients (|rho| up to 0.12 for T cells, myeloid cells, fibroblasts, endothelial and B cells; n = 15-20 patients).
+
+### What did not replicate or did not hold
+- FAO and immune activity. In TCGA Basal tumors, FAO correlated with an immune signature (ICR; rho 0.28-0.31) and with CD8 and M2 macrophage infiltration estimates. In SCAN-B (n = 360 Basal tumors) it did not (rho = 0.05, p = 0.33), although the ICR genes were coherent there (mean pairwise rho 0.73). This finding is unreplicated.
+- Serine synthesis vs FAO: unrelated within Basal tumors in both cohorts (rho near 0).
+- Serine synthesis vs immune score: a weak negative association disappeared after adjusting for stromal content in TCGA and was not significant in SCAN-B.
+- Mitochondrial importers (SFXN1, SFXN2): lower in Basal in both bulk cohorts, but not confirmed in cancer cells at single-cell level.
+- Amplification: tested and found too rare to explain the effect.
+
+### Limitations
+- All results are RNA expression (plus one copy-number frequency table). Nothing here measures serine production, flux, protein levels or localization.
+- Gene-set scores are rough proxies. Small sets (3 to 10 genes) are noisy, and some genes sit near the detection floor in SCAN-B.
+- Adjusting for programs that overlap with the subtype (proliferation, MYC, ATF4) can over- or under-correct.
+- ATF4 target expression reflects stress signaling in general and does not identify its trigger. The serine synthesis genes are themselves regulated by ATF4 in several systems, so part of that association is expected.
+- The single-cell dataset has 26 patients, only 4 PAM50 Basal-like (two with low-confidence calls from pseudobulk PAM50 on 8 samples). Single-cell results give direction and approximate size, not formal replication.
+- DNA methylation, which prior work links to PSAT1 silencing in luminal tumors, was not analyzed here, so the mechanism behind the subtype difference is open.
+- Several analyses were exploratory, and the number of comparisons run is larger than the number reported with adjusted p-values.
+- Bulk tumor expression mixes cell types, so tumor purity and stromal content influence scores in all bulk analyses.
+
+### Tools
+- Python: pandas, NumPy, SciPy, statsmodels, Scanpy, AnnData, matplotlib
+- R: WGCNA, genefu, org.Hs.eg.db, clusterProfiler, estimate
+- Data sources: recount3 (TCGA-BRCA), GEO (GSE176078), SCAN-B, cBioPortal, MitoCarta3.0
+Data and code availability
+
+
+### Possible next steps
+- DNA methylation of the serine synthesis gene promoters in TCGA-BRCA (for example PSAT1), as DNA-level support for the expression difference and a direct link to the prior work cited above.
+- A larger single-cell breast cancer atlas, to replace the 4-patient Basal-like analysis and to test the stress-response coupling with more patients.
+- Functional follow-up (isotope tracing or metabolomics) would be needed to say anything about serine flux.
+
+### References
+- Choi et al. 2022. Cell Reports (PSAT1 methylation and serine dependence in luminal breast tumors).
+- Wu SZ et al. A single-cell and spatially resolved atlas of human breast cancers. Nature Genetics, 2021.
+
 
 
 
