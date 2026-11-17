@@ -90,12 +90,12 @@ High-level amplification in 1,070 TCGA breast tumors (cBioPortal): PHGDH 2.1% (2
 #### 5. Confounder analysis
 Basal vs Luminal B gap in the serine score after adjustment:
 
-Adjustment	SCAN-B	TCGA
-- None	1.49 SD	1.45 SD
-- + proliferation	1.36 (91%)	1.38 (96%)
-- + hypoxia	1.30 (87%)	1.33 (92%)
-- + MYC targets	1.20 (81%)	1.26 (87%)
-- + ATF4 targets	1.14 (77%)	1.15 (79%)
+Adjustment,	SCAN-B,	TCGA
+- None,	1.49 SD,	1.45 SD
+- with proliferation,	1.36 (91%),	1.38 (96%)
+- with hypoxia,	1.30 (87%),	1.33 (92%)
+- with MYC targets,	1.20 (81%),	1.26 (87%)
+- with ATF4 targets,	1.14 (77%),	1.15 (79%)
  
 Within Basal tumors, the joint model gave similar coefficients in both cohorts: ATF4 targets 0.286 (SCAN-B) and 0.285 (TCGA), proliferation 0.226 and 0.174, hypoxia not significant in either. The MTHFD2 and SHMT2 gaps lost more after proliferation adjustment (62% and 75% kept in SCAN-B), indicating that part of their elevation is proliferation-linked, while MTHFD1L kept 96%.
 
