@@ -14,7 +14,7 @@ Breast tumors are classified into intrinsic molecular subtypes (PAM50): Luminal 
 
 Cancer cells reprogram their metabolism. One branch of glycolysis feeds de novo serine synthesis (PHGDH, then PSAT1, then PSPH). Serine supplies one-carbon metabolism, which runs in the cytosol (SHMT1, MTHFD1) and in mitochondria (SHMT2, MTHFD2, MTHFD1L). Members of the sideroflexin family (SFXN1, SFXN2, SFXN3) have been described as mitochondrial serine transporters. ATF4 is a stress-response transcription factor that regulates several amino-acid metabolism genes.
 
-##### Prior work
+#### Prior work
 High expression of serine synthesis genes in basal-like breast cancer has been reported before. Choi et al. (2022, Cell Reports) reported that luminal breast tumors silence PSAT1 by promoter DNA methylation and consequently depend on exogenous serine. This repository does not repeat that work. It asks complementary questions at the population scale: whether the expression pattern replicates across large independent cohorts, which cells carry it, how much of it is explained by proliferation, hypoxia and stress programs, what it co-varies with inside Basal tumors, and whether gene amplification contributes.
 
 ### Questions
@@ -67,15 +67,15 @@ Gene sets and expected directions were fixed before each replication. Many compa
 
 #### 2. Serine synthesis is higher in Basal-like tumors in two cohorts
 Median log2 difference, Basal minus Luminal B:
-Gene	TCGA	SCAN-B
-PSAT1	+4.31	+4.39
-PHGDH	+2.54	+2.29
-MTHFD1L	+1.91	+1.46
-SHMT2	+0.42	+0.39
-MTHFD2	+0.24	+0.51
-SFXN2	-1.04	-1.62
-SFXN1	-0.65	-0.48
 
+Gene:	TCGA,	SCAN-B
+- PSAT1:	+4.31,	+4.39
+- PHGDH:	+2.54,	+2.29
+- MTHFD1L:	+1.91,	+1.46
+- SHMT2:	+0.42,	+0.39
+- MTHFD2:	+0.24,	+0.51
+- SFXN2:	-1.04,	-1.62
+- SFXN1: -0.65,	-0.48
 
 HER2-enriched tumors lie between Basal-like and luminal for PHGDH, PSAT1 and MTHFD1L. SHMT1 was not upregulated in Basal-like tumors (slightly lower), so there was no sign of cytosolic compensation, and SHMT2 was not reduced.
 
@@ -89,13 +89,14 @@ High-level amplification in 1,070 TCGA breast tumors (cBioPortal): PHGDH 2.1% (2
 
 #### 5. Confounder analysis
 Basal vs Luminal B gap in the serine score after adjustment:
+
 Adjustment	SCAN-B	TCGA
-None	1.49 SD	1.45 SD
-+ proliferation	1.36 (91%)	1.38 (96%)
-+ hypoxia	1.30 (87%)	1.33 (92%)
-+ MYC targets	1.20 (81%)	1.26 (87%)
-+ ATF4 targets	1.14 (77%)	1.15 (79%)
-+ 
+- None	1.49 SD	1.45 SD
+- + proliferation	1.36 (91%)	1.38 (96%)
+- + hypoxia	1.30 (87%)	1.33 (92%)
+- + MYC targets	1.20 (81%)	1.26 (87%)
+- + ATF4 targets	1.14 (77%)	1.15 (79%)
+ 
 Within Basal tumors, the joint model gave similar coefficients in both cohorts: ATF4 targets 0.286 (SCAN-B) and 0.285 (TCGA), proliferation 0.226 and 0.174, hypoxia not significant in either. The MTHFD2 and SHMT2 gaps lost more after proliferation adjustment (62% and 75% kept in SCAN-B), indicating that part of their elevation is proliferation-linked, while MTHFD1L kept 96%.
 
 Glycolytic gene expression was also higher in Basal tumors, but only about a third of that gap remained after adjusting for proliferation and hypoxia, and there was no independent coupling between glycolysis and serine synthesis within Basal tumors. The data are therefore described as metabolic reprogramming and are not presented as evidence for a Warburg-type program.
@@ -105,15 +106,15 @@ In the WGCNA network built on SCAN-B Basal tumors, PHGDH, PSAT1, PSPH, MTHFD1L, 
 
 After regressing out proliferation, the genes most associated with the serine score were an amino-acid stress-response set:
 
-Gene	Partial rho, SCAN-B	Partial rho, TCGA
-- ASNS	0.58	0.48
-- CHAC1	0.41	0.52
-- SHMT2	0.42	0.41
-- MTHFD2	0.32	0.35
-- ATF4	0.37	0.26
-- GPT2	0.35	0.28
-- MTHFD1L	0.12	0.16
-- MKI67	-0.08	-0.12
+Gene:	Partial rho(SCAN-B),	Partial rho(TCGA)
+- ASNS:	0.58,	0.48
+- CHAC1:	0.41,	0.52
+- SHMT2:	0.42,	0.41
+- MTHFD2:	0.32,	0.35
+- ATF4:	0.37,	0.26
+- GPT2:	0.35,	0.28
+- MTHFD1L:	0.12,	0.16
+- MKI67:	-0.08,	-0.12
 
 Of the 40 genes with the highest SCAN-B values, 38 were positive in TCGA and 20 were above 0.2. In TCGA, aminoacyl-tRNA synthetases (GARS, SARS, MARS), SESN2, SLC7A5 and SLC3A2 also ranked near the top.
 
