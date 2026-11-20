@@ -1,0 +1,165 @@
+---
+title: "WGCNA"
+format: html
+---
+
+### Goal: WGCNA analysis to check serine synthesis co-expression module
+
+```{r}
+library(WGCNA)
+options(stringsAsFactors = FALSE)
+allowWGCNAThreads()
+```
+
+```{r}
+#using ScanB data
+expr_basal_matrix <- read.csv("counts_scanb_basel.csv",row.names = 1)
+```
+
+```{r}
+# 1. Samples as rows, genes as columns
+datExpr <- t(expr_basal_matrix)
+datExpr <- datExpr[, !duplicated(colnames(datExpr))]
+cat("Start:", nrow(datExpr), "samples x", ncol(datExpr), "genes\n")
+```
+
+```{r}
+# 2. Remove genes that are mostly undetected (the floor in this data is about -3.32)
+detected <- colMeans(datExpr > -3) > 0.5
+datExpr <- datExpr[, detected]
+cat("After detection filter:", ncol(datExpr), "genes\n")
+```
+
+```{r}
+# 3. Keep the 5000 most variable genes (MAD), and always keep the genes you care about
+key <- c("PHGDH", "PSAT1", "PSPH", "MTHFD1L", "MTHFD2", "SHMT2", "SFXN1", "SFXN2",
+         "ATF4", "ASNS", "MKI67")
+mads  <- apply(datExpr, 2, mad)
+top   <- names(sort(mads, decreasing = TRUE))[1:5000]
+keep  <- union(top, intersect(key, colnames(datExpr)))
+datExpr <- datExpr[, keep]
+cat("Final:", ncol(datExpr), "genes\n")
+cat("Key genes present:", intersect(key, colnames(datExpr)), "\n")
+cat("Key genes missing:", setdiff(key, colnames(datExpr)), "\n")
+
+```
+
+```{r}
+# 4. Standard WGCNA quality check
+gsg <- goodSamplesGenes(datExpr, verbose = 3)
+if (!gsg$allOK) datExpr <- datExpr[gsg$goodSamples, gsg$goodGenes]
+```
+
+```{r}
+# 5. Sample outliers: look at the tree
+sampleTree <- hclust(dist(datExpr), method = "average")
+plot(sampleTree, main = "Sample clustering (Basal, SCAN-B)", labels = FALSE, sub = "", xlab = "")
+```
+
+```{r}
+# 6. Choose the soft-thresholding power (signed network)
+powers <- c(1:10, seq(12, 20, 2))
+sft <- pickSoftThreshold(datExpr, powerVector = powers,
+                         networkType = "signed", verbose = 5)
+fit <- sft$fitIndices
+fit$SFT.R.sq <- -sign(fit[, 3]) * fit[, 2]          # signed R^2, the usual criterion
+print(fit[, c("Power", "SFT.R.sq", "mean.k.")])
+
+par(mfrow = c(1, 2))
+plot(fit$Power, fit$SFT.R.sq, type = "n", xlab = "Soft threshold (power)", ylab = "Scale-free fit (signed R^2)")
+text(fit$Power, fit$SFT.R.sq, labels = fit$Power, col = "red"); abline(h = 0.80, col = "red")
+plot(fit$Power, fit$mean.k., type = "n", xlab = "Soft threshold (power)", ylab = "Mean connectivity")
+text(fit$Power, fit$mean.k., labels = fit$Power, col = "red")
+par(mfrow = c(1, 1))
+```
+
+```{r}
+# WGCNA needs its own correlation function; this avoids a name clash with stats::cor
+cor <- WGCNA::cor
+
+net <- blockwiseModules(
+  datExpr,
+  power = 6, networkType = "signed", TOMType = "signed",
+  minModuleSize = 30, mergeCutHeight = 0.25,
+  maxBlockSize = 6000,                 # one block, since there are about 5000 genes
+  numericLabels = TRUE, pamRespectsDendro = FALSE,
+  saveTOMs = FALSE, verbose = 3
+)
+cor <- stats::cor                       # restore
+
+moduleLabels <- net$colors
+moduleColors <- labels2colors(moduleLabels)
+cat("\nModule sizes:\n"); print(sort(table(moduleColors), decreasing = TRUE))
+cat("Genes in the grey (unassigned) module:", sum(moduleColors == "grey"), "\n")
+
+# Where do the key genes land?
+key <- intersect(c("PHGDH", "PSAT1", "PSPH", "MTHFD1L", "MTHFD2", "SHMT2",
+                   "SFXN1", "SFXN2", "ATF4", "ASNS", "MKI67"), colnames(datExpr))
+print(data.frame(gene = key, module = moduleColors[match(key, colnames(datExpr))]))
+
+# Scores for serine and proliferation (same gene sets as before), per sample
+zmean <- function(genes) {
+  g <- intersect(genes, colnames(datExpr))
+  rowMeans(scale(datExpr[, g, drop = FALSE]))
+}
+ser <- zmean(c("PHGDH", "PSAT1", "PSPH"))
+pro <- zmean(c("MKI67", "TOP2A", "MCM2", "PCNA", "CCNB1", "AURKA", "BIRC5", "CDK1"))
+
+# Module eigengenes and their correlation with those scores
+MEs <- orderMEs(moduleEigengenes(datExpr, moduleColors)$eigengenes)
+tab <- data.frame(module = sub("^ME", "", colnames(MEs)),
+                  n_genes = as.integer(table(moduleColors)[sub("^ME", "", colnames(MEs))]),
+                  rho_serine = round(sapply(MEs, function(m) cor(m, ser, method = "spearman")), 2),
+                  rho_prolif = round(sapply(MEs, function(m) cor(m, pro, method = "spearman")), 2))
+print(tab[order(-abs(tab$rho_serine)), ])
+
+# Members of the module(s) that contain the serine genes, ranked by module membership (kME)
+mods <- unique(moduleColors[match(intersect(c("PHGDH", "PSAT1", "PSPH"), colnames(datExpr)), colnames(datExpr))])
+for (m in mods) {
+  idx <- which(moduleColors == m)
+  kME <- cor(datExpr[, idx], MEs[[paste0("ME", m)]], use = "p")[, 1]
+  cat("\nModule", m, "-", length(idx), "genes. Top 30 by kME:\n")
+  print(head(sort(round(kME, 2), decreasing = TRUE), 30))
+}
+
+# Save for the next step
+write.csv(data.frame(gene = colnames(datExpr), module = moduleColors),
+          "scanb_basal_wgcna_modules.csv", row.names = FALSE)
+```
+
+- **Between subtypes:** about four fifths of the Basal-vs-Luminal serine gap is not explained by proliferation, hypoxia, MYC or ATF4 scores.
+
+- **Within Basal tumors:** tumors with more serine synthesis expression are also the more proliferative ones, and they co-express with the cell-cycle genes.
+
+**What correlates with serine after removing proliferation?**
+
+```{r}
+# datExpr, ser, pro already exist from the WGCNA steps
+gene_res <- apply(datExpr, 2, function(g) resid(lm(g ~ pro)))
+ser_res  <- resid(lm(ser ~ pro))
+
+r <- cor(gene_res, ser_res, method = "spearman")[, 1]
+r <- r[!(names(r) %in% c("PHGDH", "PSAT1", "PSPH"))]
+r <- sort(r, decreasing = TRUE)
+
+cat("Top 40 genes tracking serine after removing proliferation:\n"); print(round(head(r, 40), 2))
+cat("\nMost negative 15:\n"); print(round(tail(r, 15), 2))
+cat("\nWhere the programs land:\n")
+print(round(r[intersect(c("ATF4", "ASNS", "MTHFD1L", "MTHFD2", "SHMT2", "GPT2", "SFXN1", "SFXN2", "MKI67"), names(r))], 2))
+
+write.csv(data.frame(gene = names(r), partial_rho = r), "scanb_basal_serine_partial_rho.csv", row.names = FALSE)
+
+# what do the top genes do? (GO biological process, universe = the genes in the analysis)
+library(clusterProfiler); library(org.Hs.eg.db)
+ego <- enrichGO(gene = names(head(r, 150)), universe = names(r), OrgDb = org.Hs.eg.db,
+                keyType = "SYMBOL", ont = "BP", pAdjustMethod = "BH", qvalueCutoff = 0.05)
+print(head(as.data.frame(ego)[, c("Description", "GeneRatio", "p.adjust")], 12))
+```
+
+- After removing proliferation, the genes that still move with serine are a stress-response and amino-acid-metabolism set (ASNS, CHAC1, ATF4, GPT2, SHMT2, MTHFD2). That agrees with the earlier regression, where ATF4 targets had a coefficient of about 0.29 in both cohorts and hypoxia contributed nothing.
+
+- **MTHFD1L drops to 0.12**, so within Basal its variation is mostly proliferation, which settles the question from earlier. Its elevation relative to luminal tumors (between subtypes) is a separate matter.
+
+- **The negative end** is immune and stromal genes (KLRF1, CR1, CTSG, CXCL12, MPEG1, WDFY4, GIMAP6). Tumors with more non-tumor content have lower serine scores, which is dilution by other cell types, and it matches the earlier result that serine’s link with immune score disappeared after stromal adjustment.
+
+- SFXN1 (-0.09) and SFXN2 (-0.16) go slightly the opposite way to serine within Basal.
