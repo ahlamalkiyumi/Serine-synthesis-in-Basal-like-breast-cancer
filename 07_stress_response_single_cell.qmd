@@ -1,0 +1,185 @@
+---
+title: "Untitled"
+format: html
+---
+
+### Test whether ASNS, CHAC1 and SHMT2 (amino-acid stress-response program) are cancer-cell-intrinsic in single-cell data, like the serine genes.
+
+```{r}
+library(reticulate)
+
+use_condaenv("scanpy-env", required = TRUE)
+
+py_config()
+```
+
+```{python}
+import numpy as np
+import scanpy as sc
+import pandas as pd
+from scipy.stats import spearmanr, mannwhitneyu, rankdata
+from statsmodels.stats.multitest import multipletests
+import statsmodels.formula.api as smf
+```
+
+```{python}
+adata = sc.read_h5ad("wu2021_brca.h5ad")  # log-normalized
+```
+
+```{python}
+stress_genes = ["ASNS", "CHAC1", "TRIB3", "SESN2", "SLC7A5", "SLC3A2",
+                "GARS", "GARS1", "SARS", "SARS1", "MARS", "MARS1"]
+stress_genes = [g for g in stress_genes if g in adata.var_names]
+ser_genes  = [g for g in ["PHGDH", "PSAT1", "PSPH"] if g in adata.var_names]
+pro_genes  = [g for g in ["MKI67", "TOP2A", "MCM2", "PCNA", "CCNB1", "AURKA", "BIRC5", "CDK1"] if g in adata.var_names]
+print("Stress genes found:", stress_genes)
+print("Serine genes found:", ser_genes, "| proliferation genes found:", len(pro_genes), "of 8")
+
+sc.tl.score_genes(adata, stress_genes, score_name="stress")
+sc.tl.score_genes(adata, ser_genes, score_name="serine")
+sc.tl.score_genes(adata, pro_genes, score_name="prolif")
+
+sub = adata.obs.groupby("orig.ident", observed=True)["subtype"].first().astype(str)
+basal4 = ["CID4515", "CID44971", "CID4465", "CID4495"]
+grp = sub.copy()
+grp[grp.index.isin(basal4)] = "Basal-like (PAM50)"
+
+# 1) which cell types carry the stress program (per-patient means, >= 20 cells)
+g = adata.obs.groupby(["orig.ident", "celltype_major"], observed=True)
+ct = pd.concat([g["stress"].mean().rename("stress"), g["serine"].mean().rename("serine"),
+                g.size().rename("n")], axis=1).reset_index()
+ct = ct[ct["n"] >= 20]
+print("\nMedian per-patient score by cell type:")
+print(ct.groupby("celltype_major", observed=True)[["stress", "serine"]].median().round(3)
+        .sort_values("stress", ascending=False))
+
+# 2) single genes in cancer cells, by group (per-patient means)
+cc = adata[adata.obs["celltype_major"] == "Cancer Epithelial"]
+genes = [x for x in ["ASNS", "CHAC1", "TRIB3", "SHMT2", "MTHFD2", "GPT2", "ATF4"] if x in adata.var_names]
+rows = {}
+for gene in genes:
+    x = cc[:, gene].X
+    x = x.toarray().ravel() if hasattr(x, "toarray") else np.asarray(x).ravel()
+    p = pd.DataFrame({"e": x, "patient": cc.obs["orig.ident"].values}).groupby("patient", observed=True)["e"].agg(["mean", "size"])
+    rows[gene] = p[p["size"] >= 20]["mean"]
+t = pd.DataFrame(rows)
+cc_sc = cc.obs.groupby("orig.ident", observed=True)[["stress", "serine"]].mean()
+t["stress_score"] = cc_sc["stress"].reindex(t.index)
+t["group"] = grp.reindex(t.index)
+print("\nCancer cells, per-patient median by group:")
+print(t.groupby("group")[genes + ["stress_score"]].agg("median").round(3))
+print(t["group"].value_counts().to_dict())
+
+tn, er = t.loc[t["group"] == "TNBC", "stress_score"], t.loc[t["group"] == "ER+", "stress_score"]
+tb = t.loc[t["group"].isin(["TNBC", "Basal-like (PAM50)"]), "stress_score"]
+print(f"\nStress score, TNBC (clinical, all 8) vs ER+: p = {mannwhitneyu(grp.reindex(t.index).isin(['TNBC','Basal-like (PAM50)']).pipe(lambda m: t.loc[m, 'stress_score']), er).pvalue:.3f}")
+
+# 3) coupling inside cancer cells: serine vs stress, with proliferation removed, per patient
+print("\nWithin cancer cells, per patient (cells as units; direction only):")
+res = []
+for pid, d in cc.obs.groupby("orig.ident", observed=True):
+    if len(d) < 100: continue
+    s, st, pr = d["serine"].values, d["stress"].values, d["prolif"].values
+    A = np.column_stack([np.ones(len(pr)), pr])
+    proj = A @ np.linalg.pinv(A)
+    r_raw = spearmanr(s, st)[0]
+    r_par = spearmanr(s - proj @ s, st - proj @ st)[0]
+    res.append({"patient": pid, "group": grp.get(pid), "cells": len(d),
+                "rho_serine_stress": round(r_raw, 2), "rho_after_prolif": round(r_par, 2)})
+res = pd.DataFrame(res).sort_values("group")
+print(res.to_string(index=False))
+print(res.groupby("group")[["rho_serine_stress", "rho_after_prolif"]].median().round(2))
+```
+
+- The serine score is clearly highest in cancer cells (the earlier result holds). The stress score is not: cancer cells sit in the middle, level with myeloid cells, and plasmablasts and T cells score higher.
+
+- All the stress scores are negative, meaning below the matched background genes, and the differences are small. Several genes in the set (the synthetases, SLC7A5, SLC3A2) are expressed in many cell types, and SLC7A5 and SLC3A2 are known to rise in activated T cells, as far as I remember, so the score mixes cell types. I’d say that the stress program in bulk may partly come from non-tumor cells, which I can’t separate with this score.
+
+### Within each patient, take the stress score of each non-cancer cell type, and compare across patients with the serine score of that patient’s cancer cells. If cancer-cell serine synthesis is linked to what the neighbors are doing, it should show up as a correlation across tumors.
+
+```{python}
+stress = [g for g in ["ASNS", "CHAC1", "TRIB3", "SESN2", "SLC7A5", "SLC3A2", "GARS", "SARS", "MARS"] if g in adata.var_names]
+ser    = [g for g in ["PHGDH", "PSAT1", "PSPH"] if g in adata.var_names]
+sc.tl.score_genes(adata, stress, score_name="stress")
+sc.tl.score_genes(adata, ser, score_name="serine")
+
+g = adata.obs.groupby(["orig.ident", "celltype_major"], observed=True)
+ct = pd.concat([g["stress"].mean().rename("stress"), g["serine"].mean().rename("serine"),
+                g.size().rename("n")], axis=1).reset_index()
+ct = ct[ct["n"] >= 20]
+
+cancer_ser = ct[ct["celltype_major"] == "Cancer Epithelial"].set_index("orig.ident")["serine"]
+cancer_str = ct[ct["celltype_major"] == "Cancer Epithelial"].set_index("orig.ident")["stress"]
+
+rows = []
+for cell in ["T-cells", "Myeloid", "CAFs", "Endothelial", "B-cells", "PVL", "Plasmablasts"]:
+    s = ct[ct["celltype_major"] == cell].set_index("orig.ident")["stress"]
+    common = s.index.intersection(cancer_ser.index)
+    if len(common) < 12:
+        continue
+    r1, p1 = spearmanr(s[common], cancer_ser[common])
+    r2, p2 = spearmanr(s[common], cancer_str[common])
+    rows.append({"cell_type": cell, "patients": len(common),
+                 "rho_vs_cancer_serine": r1, "p1": p1,
+                 "rho_vs_cancer_stress": r2, "p2": p2})
+res = pd.DataFrame(rows)
+res["padj_serine"] = multipletests(res["p1"], method="fdr_bh")[1]
+print(res.round(3).to_string(index=False))
+```
+
+Stress-response expression in non-tumor cell types (T cells, myeloid cells, fibroblasts, endothelial and B cells) did not correlate with the serine synthesis score of the same tumors’ cancer cells (\|rho\| ≤ 0.12, n = 15–20 patients).
+
+```{python}
+stress = [g for g in ["ASNS", "CHAC1", "TRIB3", "SESN2", "SLC7A5", "SLC3A2", "GARS", "SARS", "MARS"] if g in adata.var_names]
+ser    = [g for g in ["PHGDH", "PSAT1", "PSPH"] if g in adata.var_names]
+pro    = [g for g in ["MKI67", "TOP2A", "MCM2", "PCNA", "CCNB1", "AURKA", "BIRC5", "CDK1"] if g in adata.var_names]
+sc.tl.score_genes(adata, stress, score_name="stress")
+sc.tl.score_genes(adata, ser, score_name="serine")
+sc.tl.score_genes(adata, pro, score_name="prolif")
+
+cc = adata[adata.obs["celltype_major"] == "Cancer Epithelial"].obs[["orig.ident", "subtype", "stress", "serine", "prolif"]].copy()
+cc["patient"] = cc["orig.ident"].astype(str)
+cc["subtype"] = cc["subtype"].astype(str)
+basal4 = ["CID4515", "CID44971", "CID4465", "CID4495"]
+cc["group"] = cc["subtype"]
+cc.loc[cc["patient"].isin(basal4), "group"] = "Basal-like"
+cc["tnbc"] = np.where(cc["subtype"] == "TNBC", "TNBC (clinical, 8)", np.where(cc["subtype"] == "ER+", "ER+", "HER2+"))
+
+n = cc.groupby("patient").size()
+cc = cc[cc["patient"].isin(n[n >= 100].index)]
+print("Patients:", cc["patient"].nunique(), "| cancer cells:", len(cc))
+
+# 1) per-patient coupling (proliferation removed), then compare groups
+rows = []
+for pid, d in cc.groupby("patient"):
+    A = np.column_stack([np.ones(len(d)), d["prolif"].values])
+    proj = A @ np.linalg.pinv(A)
+    s, st = d["serine"].values, d["stress"].values
+    rows.append({"patient": pid, "group": d["group"].iloc[0], "tnbc": d["tnbc"].iloc[0],
+                 "rho": spearmanr(s - proj @ s, st - proj @ st)[0]})
+r = pd.DataFrame(rows)
+print(r.groupby("group")["rho"].agg(["median", "count"]).round(2))
+
+for name, a_mask in [("TNBC (all 8) vs ER+", r["tnbc"] == "TNBC (clinical, 8)"),
+                     ("Basal-like (4) vs ER+", r["group"] == "Basal-like")]:
+    a = r.loc[a_mask, "rho"]; b = r.loc[r["tnbc"] == "ER+", "rho"]
+    print(f"{name}: median rho {a.median():.2f} vs {b.median():.2f}, Mann-Whitney p = {mannwhitneyu(a, b).pvalue:.3f} (n = {len(a)} vs {len(b)})")
+
+# 2) pooled cells, patient fixed effects, slope allowed to differ by group, patient-clustered errors
+cc["TNBC_vs_ER"] = (cc["tnbc"] == "TNBC (clinical, 8)").astype(int)
+sub = cc[cc["tnbc"].isin(["TNBC (clinical, 8)", "ER+"])].copy()
+for c in ["stress", "serine", "prolif"]:
+    sub[c] = sub.groupby("patient")[c].transform(lambda x: (x - x.mean()) / x.std())   # within-patient SD units
+m = smf.ols("stress ~ C(patient) + prolif + serine + serine:TNBC_vs_ER", data=sub).fit(
+        cov_type="cluster", cov_kwds={"groups": sub["patient"]})
+for term in ["serine", "serine:TNBC_vs_ER"]:
+    lo, hi = m.conf_int().loc[term]
+    print(f"{term}: {m.params[term]:+.3f} (95% CI {lo:+.3f} to {hi:+.3f}, p = {m.pvalues[term]:.3f})")
+
+# 3) across patients: mean serine vs mean stress of the cancer cells
+pm = cc.groupby("patient")[["serine", "stress"]].mean()
+rho, p = spearmanr(pm["serine"], pm["stress"])
+print(f"Across patients (n = {len(pm)}): cancer-cell serine vs stress rho = {rho:.2f}, p = {p:.3g}")
+```
+
+Within cancer cells, serine synthesis and stress-response expression were weakly coupled in TNBC (mean within-patient slope ≈ 0.22 SD per SD) and not in ER+ cancer cells (≈ 0.02); the per-patient correlation was higher in TNBC than in ER+ (median 0.13 vs 0.03, p = 0.021, n = 8 vs 9), though heterogeneous across tumors.
