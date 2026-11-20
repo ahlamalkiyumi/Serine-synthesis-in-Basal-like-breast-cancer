@@ -1,0 +1,24 @@
+---
+title: "Untitled"
+format: html
+---
+
+```{python}
+import pandas as pd
+
+t = pd.read_csv("CNA_Genes.txt", sep="\t")
+print(t.shape)       
+```
+
+```{python}
+print(t[t["Gene"].isin(["PHGDH", "PSAT1", "PSPH", "MTHFD1L"])].to_string(index=False))
+                                               
+```
+
+- PHGDH is amplified in 2.1% of all breast tumors in the study. Basal-like tumors were about 18% of your TCGA tumors (197 of 1,109), so about 190 tumors in a cohort this size. Even if all 23 amplified tumors were Basal-like, which won’t be the case, amplification could cover at most about 12% of them.
+
+- The expression difference is a shift of the whole group, with PHGDH about 2.5 log2 units higher in Basal than in LumB (medians 7.5 vs 5.0), so it is present in nearly every Basal tumor, not in a minority.
+
+- PSAT1 is amplified in 0.2% (two tumors) and has deep deletions in 4, so amplification doesn’t play any role for it. PSPH and MTHFD1L are similar at about 1%.
+
+- So the answer to your question is no: it is not just amplification, and amplification explains at most a small fraction of the effect. Something else raises these genes across the subtype, consistent with the regulatory results (ATF4-linked stress response, lineage) rather than a DNA-level change.
