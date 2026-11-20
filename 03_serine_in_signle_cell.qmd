@@ -1,0 +1,267 @@
+---
+title: "Check if Serine synthesis replicates in single-cell data"
+format: html
+---
+
+## Goal: To check if we can replicates Serine synthesis and **Mitochondrial serine importers results in Single-cell**
+
+```{r}
+library(reticulate)
+
+use_condaenv("scanpy-env", required = TRUE)
+
+py_config()
+```
+
+```{python}
+import numpy as np
+import scanpy as sc
+import pandas as pd
+from scipy.stats import spearmanr, mannwhitneyu, rankdata
+from statsmodels.stats.multitest import multipletests
+import statsmodels.formula.api as smf
+```
+
+```{python}
+adata = sc.read_h5ad("wu2021_brca.h5ad")  # log-normalized
+```
+
+```{python}
+ser = [g for g in ["PHGDH", "PSAT1", "PSPH"] if g in adata.var_names]
+mito_imp = [g for g in ["SFXN1", "SFXN2", "SFXN3"] if g in adata.var_names]
+print("Found:", ser, mito_imp)
+
+sc.tl.score_genes(adata, ser, score_name="serine_synth")
+sc.tl.score_genes(adata, mito_imp, score_name="sfxn_import")
+
+# 1) which cell types carry the signal (per-patient means, >= 20 cells)
+g = adata.obs.groupby(["orig.ident", "celltype_major"])
+tab = pd.concat([g["serine_synth"].mean().rename("serine"),
+                 g["sfxn_import"].mean().rename("sfxn"),
+                 g.size().rename("n")], axis=1).reset_index()
+tab = tab[tab["n"] >= 20]
+print(tab.groupby("celltype_major")[["serine", "sfxn"]].median().round(3)
+         .sort_values("serine", ascending=False))
+
+# 2) cancer cells only: TNBC vs ER+ (per-patient means)
+mal = tab[tab["celltype_major"] == "Cancer Epithelial"].copy()
+mal["subtype"] = mal["orig.ident"].map(adata.obs.groupby("orig.ident")["subtype"].first())
+print(mal.groupby("subtype")[["serine", "sfxn"]].agg(["median", "count"]).round(3))
+
+a = mal.loc[mal["subtype"] == "TNBC", "serine"]
+b = mal.loc[mal["subtype"] == "ER+", "serine"]
+print("Serine synthesis, TNBC vs ER+ (cancer cells): p =", round(mannwhitneyu(a, b).pvalue, 4))
+```
+
+**Serine synthesis (PHGDH, PSAT1, PSPH)**
+
+- It is a cancer-cell signal. Cancer epithelial cells score highest (0.100), well above normal epithelial cells (0.031), and every immune and stromal cell type is at or below zero. So this is not a composition effect, and it is higher in tumor cells than in normal epithelium, unlike FAO, which was higher in normal epithelium.
+
+- In cancer cells it is higher in TNBC than ER+ (0.176 vs 0.001, p = 0.008, 8 vs 9 patients). That matches the bulk finding of about 6 to 20 fold higher PHGDH and PSAT1 in Basal tumors. HER2+ falls in between (0.082), but with 3 patients I’d leave it out of the text.
+
+**Mitochondrial serine importers (SFXN1/2/3)**
+
+- This does not replicate the way the serine result does. The importer score is slightly negative in cancer cells (-0.038), and the highest-scoring cell type is T cells (+0.029). TNBC and ER+ cancer cells are nearly the same (-0.034 vs -0.020, not tested).
+
+- So the bulk finding that SFXN1/2 are higher in luminal tumors may partly come from the cells around the tumor cells, not from the cancer cells themselves. I’d soften that part of the story. Keep in mind that three genes per cell is a noisy score, and SFXN1 was the strongest bulk gene, so it is worth looking at on its own before concluding.
+
+### Repeat the comparison with only the 4 PAM50-confirmed Basal-like patients against ER+, and look at SFXN1 alone.
+
+```{python}
+basal4 = ["CID4515", "CID44971", "CID4465", "CID4495"]
+mal = tab[tab["celltype_major"] == "Cancer Epithelial"].copy()
+mal["group"] = "other"
+mal.loc[mal["orig.ident"].isin(basal4), "group"] = "Basal-like"
+mal["subtype"] = mal["orig.ident"].map(adata.obs.groupby("orig.ident", observed=True)["subtype"].first())
+mal.loc[mal["subtype"] == "ER+", "group"] = "ER+"
+
+# SFXN1 alone, per patient (cancer cells)
+cc = adata[adata.obs["celltype_major"] == "Cancer Epithelial"]
+sfxn1 = pd.Series(cc[:, "SFXN1"].X.toarray().ravel() if hasattr(cc[:, "SFXN1"].X, "toarray")
+                  else cc[:, "SFXN1"].X.ravel(), index=cc.obs_names)
+mal["SFXN1"] = mal["orig.ident"].map(sfxn1.groupby(cc.obs["orig.ident"].values).mean())
+
+print(mal[mal["group"] != "other"].groupby("group")[["serine", "sfxn", "SFXN1"]]
+         .agg(["median", "count"]).round(3))
+```
+
+- **Serine synthesis** in cancer cells is about 0.2 higher in Basal-like patients than in ER+ (0.206 vs 0.001), compared with 0.176 for all TNBC, so removing the non-Basal TNBC patients sharpens the contrast, as expected.
+
+- **SFXN1** is about half as high in Basal-like cancer cells (0.088 vs 0.192), which matches the bulk result (higher in luminal) and goes the opposite way to the importer score above. That importer score averaged three genes and masked this. So it is worth looking at SFXN1 alone: the cancer cells themselves differ, and the bulk difference is not purely from surrounding cells.
+
+- **The `sfxn` score** (three genes) is -0.074 vs -0.020, the same direction, but small.
+
+### Look at SFXN1 and SFXN2 across cell types
+
+```{python}
+rows = []
+for gname in ["SFXN1", "SFXN2", "PSAT1"]:
+    x = adata[:, gname].X
+    x = x.toarray().ravel() if hasattr(x, "toarray") else x.ravel()
+    df = pd.DataFrame({"expr": x, "patient": adata.obs["orig.ident"].values,
+                       "celltype": adata.obs["celltype_major"].values})
+    g = df.groupby(["patient", "celltype"], observed=True)["expr"].agg(["mean", "size"]).reset_index()
+    g = g[g["size"] >= 20]
+    rows.append(g.groupby("celltype")["mean"].median().rename(gname))
+print(pd.concat(rows, axis=1).round(3).sort_values("SFXN1", ascending=False))
+```
+
+- **SFXN1** is expressed in all the cell types, and T cells have as much as cancer cells. So in bulk tumors, the SFXN1 level mixes tumor-cell expression with the amount of immune and stromal tissue, and it can’t be read as a measure of serine import by cancer cells. Basal tumors usually carry more T cells than luminal ones, which would push bulk SFXN1 up in Basal. It is lower there anyway, so the cancer-cell difference could be larger than the bulk shows, but that is an inference I haven’t tested.
+
+- **SFXN2** behaves the way the importer claim needs: it is epithelial, and its Basal-vs-luminal gap is the larger one in bulk (-1.62 log2 in SCAN-B, -1.26 SD after the proliferation adjustment, where it actually grew). I would use SFXN2 as the main importer evidence, and describe SFXN1 as ambiguous.
+
+- serine synthesis concentrated in cancer cells; SFXN2 epithelial; SFXN1 broadly expressed, so its bulk signal is mixed.
+
+### The same genes in cancer cells only, by subtype, per patient.
+
+```{python}
+cc = adata[adata.obs["celltype_major"] == "Cancer Epithelial"]
+basal4 = ["CID4515", "CID44971", "CID4465", "CID4495"]
+        
+out = {}
+for gname in ["PHGDH", "PSAT1", "SFXN1", "SFXN2"]:
+    x = cc[:, gname].X
+    x = x.toarray().ravel() if hasattr(x, "toarray") else x.ravel()
+    df = pd.DataFrame({"e": x, "patient": cc.obs["orig.ident"].values})
+    g = df.groupby("patient", observed=True)["e"].agg(["mean", "size"])
+    out[gname] = g[g["size"] >= 20]["mean"]
+
+t = pd.DataFrame(out)
+sub = adata.obs.groupby("orig.ident", observed=True)["subtype"].first()
+t["subtype"] = t.index.map(sub)
+t["group"] = t["subtype"].astype(str)
+t.loc[t.index.isin(basal4), "group"] = "Basal-like (PAM50)"
+print(t.groupby("group", observed=True)[["PHGDH", "PSAT1", "SFXN1", "SFXN2"]]
+        .agg(["median", "count"]).round(3))
+
+for gname in ["PHGDH", "PSAT1", "SFXN2"]:
+    a, b = t.loc[t["subtype"] == "TNBC", gname], t.loc[t["subtype"] == "ER+", gname]
+    print(f"{gname}, TNBC vs ER+: p = {mannwhitneyu(a, b).pvalue:.3f} (n = {len(a)} vs {len(b)})")
+```
+
+- **PHGDH and PSAT1** are clearly higher in TNBC cancer cells, as in bulk, and the effect is large relative to the spread. This is the cleanest single-cell support for the serine claim: it is cancer-cell-intrinsic.
+
+- **SFXN2 does not differ** much . So the bulk difference for SFXN2 didn’t show up in the cancer cells.
+
+- **SFXN1** is lower in TNBC cancer cells.
+
+```{python}
+print(t.loc[t["group"].isin(["Basal-like (PAM50)", "TNBC"]),
+            ["group", "PHGDH", "PSAT1", "SFXN1", "SFXN2"]].round(3).sort_values("group"))
+```
+
+In cancer cells, PHGDH and PSAT1 were higher in PAM50 Basal-like patients (n = 4) than in ER+ patients (n = 9), while patients with other TNBC calls were heterogeneous. SFXN1 was lowest in the four Basal-like patients, and SFXN2 did not differ between groups.
+
+**Replicated: the serine synthesis score (PHGDH, PSAT1, PSPH)**
+
+- It sits in the cancer cells. Cancer epithelial cells scored 0.100, normal epithelial cells 0.031, and every immune and stromal cell type was at or below zero. So the bulk signal is not a composition effect.
+
+- It is higher in TNBC than in ER+ cancer cells (0.176 vs 0.001, p = 0.008, 8 vs 9 patients).
+
+- In the 4 PAM50-confirmed Basal-like patients it was 0.206, against 0.001 in ER+, which is the same direction with a cleaner group, though 4 patients is too few for a p-value.
+
+**Only weakly: the mitochondrial importers (SFXN genes)**
+
+- The three-gene importer score did not separate the groups: TNBC -0.034 vs ER+ -0.020 in cancer cells, and the highest-scoring cell type was T cells.
+
+- SFXN1 alone was lower in Basal-like cancer cells than in ER+ (0.088 vs 0.192), the expected direction, but that is 4 vs 9 patients with no test.
+
+### Testing MTHFD1L
+
+```{python}
+gene = "MTHFD1L"
+print("Gene present:", gene in adata.var_names)
+
+ser = [g for g in ["PHGDH", "PSAT1", "PSPH"] if g in adata.var_names]
+pro = [g for g in ["MKI67", "TOP2A", "MCM2", "PCNA", "CCNB1", "AURKA", "BIRC5", "CDK1"] if g in adata.var_names]
+sc.tl.score_genes(adata, ser, score_name="serine")
+sc.tl.score_genes(adata, pro, score_name="prolif")
+
+x = adata[:, gene].X
+x = x.toarray().ravel() if hasattr(x, "toarray") else np.asarray(x).ravel()
+
+obs = adata.obs[["orig.ident", "celltype_major", "subtype"]].copy()
+obs["patient"] = obs["orig.ident"].astype(str)
+obs["celltype"] = obs["celltype_major"].astype(str)
+obs["subtype"] = obs["subtype"].astype(str)
+obs["expr"] = x
+obs["detected"] = (x > 0).astype(float)
+obs["serine"] = adata.obs["serine"].values
+obs["prolif"] = adata.obs["prolif"].values
+
+basal4 = ["CID4515", "CID44971", "CID4465", "CID4495"]
+sub = obs.groupby("patient")["subtype"].first()
+grp = sub.copy()
+grp[grp.index.isin(basal4)] = "Basal-like (PAM50)"
+
+# 1) which cell types carry it (per-patient values, at least 20 cells)
+g = obs.groupby(["patient", "celltype"])
+ct = pd.concat([g["expr"].mean().rename("mean_expr"),
+                g["detected"].mean().rename("frac_detected"),
+                g.size().rename("n")], axis=1).reset_index()
+ct = ct[ct["n"] >= 20]
+print("\nMTHFD1L by cell type (median across patients):")
+print(ct.groupby("celltype")[["mean_expr", "frac_detected"]].median().round(3)
+        .sort_values("mean_expr", ascending=False))
+
+# 2) cancer cells, by group
+cc = obs[obs["celltype"] == "Cancer Epithelial"]
+pt = cc.groupby("patient").agg(mean_expr=("expr", "mean"),
+                               frac_detected=("detected", "mean"),
+                               n=("expr", "size"))
+pt = pt[pt["n"] >= 20]
+pt["group"] = grp.reindex(pt.index)
+pt["clinical"] = sub.reindex(pt.index)
+
+pd.set_option("display.width", 200)
+print("\nPer patient (cancer cells):")
+print(pt.sort_values("group").round(3).to_string())
+print("\nBy group (median across patients):")
+print(pt.groupby("group").agg(median_expr=("mean_expr", "median"),
+                              median_frac_detected=("frac_detected", "median"),
+                              patients=("mean_expr", "size")).round(3))
+
+er = pt.loc[pt["clinical"] == "ER+", "mean_expr"]
+for name, mask in [("TNBC (all 8)", pt["clinical"] == "TNBC"),
+                   ("Basal-like (4)", pt["group"] == "Basal-like (PAM50)")]:
+    a = pt.loc[mask, "mean_expr"]
+    print(f"{name} vs ER+: {a.median():.3f} vs {er.median():.3f}, "
+          f"Mann-Whitney p = {mannwhitneyu(a, er).pvalue:.3f} (n = {len(a)} vs {len(er)})")
+
+# 3) inside cancer cells: does it follow serine or proliferation (per patient, cells with at least 100 per patient)
+rows = []
+for pid, d in cc.groupby("patient"):
+    if len(d) < 100:
+        continue
+    e, s, p = d["expr"].values, d["serine"].values, d["prolif"].values
+    A = np.column_stack([np.ones(len(p)), p])
+    proj = A @ np.linalg.pinv(A)
+    rows.append({"patient": pid, "group": grp.get(pid), "cells": len(d),
+                 "frac_detected": d["detected"].mean(),
+                 "rho_prolif": spearmanr(e, p)[0],
+                 "rho_serine": spearmanr(e, s)[0],
+                 "rho_serine_after_prolif": spearmanr(e - proj @ e, s - proj @ s)[0]})
+r = pd.DataFrame(rows).sort_values("group")
+print("\nWithin cancer cells, per patient:")
+print(r.round(2).to_string(index=False))
+print(r.groupby("group")[["rho_prolif", "rho_serine", "rho_serine_after_prolif"]].median().round(2))
+```
+
+```{python}
+tn_ids = pt.index[pt["clinical"] == "TNBC"]
+tn_ct = ct[ct["patient"].isin(tn_ids)]
+
+print("Mean expression by cell type, TNBC patients:")
+tab_expr = tn_ct.pivot(index="patient", columns="celltype", values="mean_expr").round(3)
+print(tab_expr.to_string())
+print("\nFraction of cells detecting the gene:")
+print(tn_ct.pivot(index="patient", columns="celltype", values="frac_detected").round(3).to_string())
+
+print("\nIs the cancer-cell value higher than each other cell type, within the same patient?")
+for c in ["CAFs", "Myeloid", "Endothelial", "PVL", "T-cells", "B-cells"]:
+    if c in tab_expr.columns:
+        d = (tab_expr["Cancer Epithelial"] - tab_expr[c]).dropna()
+        print(f"  {c}: cancer cells higher in {(d > 0).sum()} of {len(d)} TNBC patients")
+```
+
+the bulk elevation is partly from the surrounding tissue

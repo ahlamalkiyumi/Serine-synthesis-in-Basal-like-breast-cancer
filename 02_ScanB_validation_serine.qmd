@@ -1,0 +1,257 @@
+---
+title: "Untitled"
+format: html
+---
+
+```{python}
+import pandas as pd
+import numpy as np
+from scipy.stats import mannwhitneyu, kruskal,  spearmanr
+from statsmodels.stats.multitest import multipletests
+import statsmodels.formula.api as smf
+from statsmodels.stats.outliers_influence import variance_inflation_factor
+```
+
+```{python}
+basal_counts = pd.read_csv("counts_scanb_basel.csv", index_col=0)      
+sample = pd.read_csv("scanB_clinical_combined.csv",index_col='sample_title')
+all_counts= pd.read_csv("scanB_expr_data.csv",index_col=0)
+```
+
+```{python}
+sample.head()
+```
+
+```{python}
+sample.columns
+```
+
+```{python}
+all_counts.head()
+```
+
+```{python}
+# 2. Subtypes in the full cohort
+print("\n", sample["pam50_subtype"].value_counts(dropna=False))
+```
+
+```{python}
+genes = ["PHGDH", "PSAT1", "PSPH", "SFXN1", "SFXN2", "SFXN3", "SHMT2", "MTHFD2", "MTHFD1L"]
+genes = [g for g in genes if g in all_counts.index]
+
+lab = sample["pam50_subtype"].reindex(all_counts.columns)
+keep = lab.isin(["Basal", "Her2", "LumA", "LumB"])           # drop Normal-like and unlabeled
+expr = all_counts.loc[genes, keep[keep].index]
+lab = lab[keep]
+print(lab.value_counts())
+
+rows = []
+for g in genes:
+    v = expr.loc[g]
+    grp = {s: v[lab == s] for s in ["Basal", "Her2", "LumA", "LumB"]}
+    lum = pd.concat([grp["LumA"], grp["LumB"]])
+    rows.append({
+        "gene": g,
+        **{f"median_{s}": grp[s].median() for s in grp},
+        "Basal_minus_LumB": grp["Basal"].median() - grp["LumB"].median(),
+        "p_Basal_vs_LumB": mannwhitneyu(grp["Basal"], grp["LumB"]).pvalue,
+        "Basal_minus_luminal": grp["Basal"].median() - lum.median(),
+        "p_Basal_vs_luminal": mannwhitneyu(grp["Basal"], lum).pvalue,
+    })
+t = pd.DataFrame(rows).set_index("gene")
+t["padj_Basal_vs_LumB"] = multipletests(t["p_Basal_vs_LumB"], method="fdr_bh")[1]
+
+pd.set_option("display.width", 250); pd.set_option("display.max_columns", None)
+print(t[["median_Basal", "median_Her2", "median_LumA", "median_LumB",
+         "Basal_minus_LumB", "padj_Basal_vs_LumB", "Basal_minus_luminal"]].round(2))
+```
+
+The serine observation replicates in an independent cohort, with the same direction for every gene and similar sizes for most.
+
+Serine synthesis (PSAT1, PHGDH) is higher in Basal
+
+The importers go the expected way: SFXN2 is clearly lower in Basal, SFXN1 close to other subtypes.
+
+The mitochondrial one-carbon enzymes (SHMT2, MTHFD2) is a liitle higher in basal that lum but close to her2, while MTHFD1L high in basal
+
+## The most important check on the serine story is whether it is really about serine or just about proliferation. Basal tumors divide faster, and serine and one-carbon genes rise with proliferation in many tumor types.
+
+```{python}
+def zmean(genes, mat):
+    g = [x for x in genes if x in mat.index]
+    print(f"  {len(g)} of {len(genes)} found")
+    e = mat.loc[g]
+    return e.sub(e.mean(axis=1), axis=0).div(e.std(axis=1), axis=0).mean(axis=0)
+
+lab = sample["pam50_subtype"].reindex(all_counts.columns)
+ok = lab.isin(["Basal", "LumB"])
+ids = ok[ok].index
+M = all_counts.loc[:, ids]
+
+d = pd.DataFrame({"basal": (lab[ids] == "Basal").astype(int)})
+print("Serine synthesis score:");   d["serine_score"] = zmean(["PHGDH", "PSAT1", "PSPH"], M)
+print("Proliferation score:");      d["prolif"] = zmean(["MKI67", "TOP2A", "MCM2", "PCNA", "CCNB1", "AURKA", "BIRC5", "CDK1"], M)
+
+outcomes = ["serine_score", "PHGDH", "PSAT1", "SHMT1", "SHMT2", "MTHFD1L", "MTHFD2", "SFXN1", "SFXN2"]
+for g in outcomes[1:]:
+    if g in M.index:
+        d[g] = M.loc[g]
+outcomes = [o for o in outcomes if o in d.columns]
+
+# standardize everything so coefficients are in SD units
+for c in outcomes + ["prolif"]:
+    d[c] = (d[c] - d[c].mean()) / d[c].std()
+
+print("\nProliferation score, median by group (SD units):")
+print(d.groupby("basal")["prolif"].median().round(2))
+
+rows = []
+for o in outcomes:
+    m0 = smf.ols(f"{o} ~ basal", data=d).fit()
+    m1 = smf.ols(f"{o} ~ basal + prolif", data=d).fit()
+    ci0, ci1 = m0.conf_int().loc["basal"], m1.conf_int().loc["basal"]
+    rows.append({"outcome": o,
+                 "Basal_vs_LumB": m0.params["basal"], "CI_lo": ci0[0], "CI_hi": ci0[1],
+                 "adj_Basal_vs_LumB": m1.params["basal"], "adjCI_lo": ci1[0], "adjCI_hi": ci1[1],
+                 "prolif_coef": m1.params["prolif"]})
+#adj_Basal_vs_LumB: The same gap after adding the proliferation score   
+#prolif_coef:How much the gene rises per 1 SD of proliferation within a subtype. A high value means the gene follows cell division closely.
+#fraction_kept: adj divided by the unadjusted gap, the share of the gap that survives adjustment. 0.91 means 91% survives. A value above 1 means the gap got larger.
+
+res = pd.DataFrame(rows).set_index("outcome")
+res["fraction_kept"] = res["adj_Basal_vs_LumB"] / res["Basal_vs_LumB"]
+pd.set_option("display.width", 250); pd.set_option("display.max_columns", None)
+print("\n", res.round(2))
+```
+
+```{python}
+# Check 2: compare only tumors with overlapping proliferation
+lo = d.loc[d["basal"] == 1, "prolif"].quantile(0.10)
+hi = d.loc[d["basal"] == 0, "prolif"].quantile(0.90)
+sub = d[(d["prolif"] >= lo) & (d["prolif"] <= hi)]
+print("\nOverlapping-proliferation subset:", sub["basal"].value_counts().to_dict())
+for o in ["serine_score", "SHMT2", "MTHFD1L"]:
+    if o in sub.columns:
+        m = smf.ols(f"{o} ~ basal + prolif", data=sub).fit()
+        a, b = m.conf_int().loc["basal"]
+        print(f"  {o}: Basal vs LumB = {m.params['basal']:.2f} SD (95% CI {a:.2f} to {b:.2f})")
+```
+
+**Overlapping-proliferation subset.** It keeps only tumors whose proliferation lies in the range where Basal (214) and Luminal B (622) tumors overlap, so it compares like with like. The serine gap is still 1.34 SD (1.24 to 1.45), almost the same as in the model, which is a second check pointing the same way. MTHFD1L stays at 1.43 and SHMT2 drops to 0.51.
+
+```{python}
+# Check 3: within Basal only
+#These show how closely each gene tracks proliferation among Basal tumors only.
+b = d[d["basal"] == 1]
+print("\nWithin Basal, correlation with proliferation:")
+for o in outcomes:
+    rho, p = spearmanr(b[o], b["prolif"])
+    print(f"  {o}: rho = {rho:.2f} (p = {p:.2g})")
+```
+
+- Basal tumors are more proliferative (0.49 vs -0.13 SD), but that explains only about a tenth of the serine-synthesis gap. In the subset where Basal and LumB tumors have overlapping proliferation (214 vs 622), the gap is still 1.34 SD (CI 1.24 to 1.45).
+
+- The importers (SFXN1, SFXN2) are lower in Basal regardless of proliferation. SHMT1 is lower in Basal and the gap gets slightly larger after adjusting, so there is still no sign of cytosolic compensation.
+
+### Is a glycolysis score higher in Basal, and does it track serine synthesis?
+
+```{python}
+def zmean(genes, mat):
+    g = [x for x in genes if x in mat.index]
+    print(f"  {len(g)} of {len(genes)} found: {g}")
+    e = mat.loc[g]
+    return e.sub(e.mean(axis=1), axis=0).div(e.std(axis=1), axis=0).mean(axis=0)
+
+glyc_genes = ["SLC2A1", "HK2", "GPI", "PFKP", "ALDOA", "GAPDH", "PGK1", "ENO1", "PKM", "LDHA"]
+
+lab = sample["pam50_subtype"].reindex(all_counts.columns)
+ok = lab.isin(["Basal", "Her2", "LumA", "LumB"])
+M = all_counts.loc[:, ok[ok].index]; lab = lab[ok]
+
+d = pd.DataFrame({"glycolysis": zmean(glyc_genes, M),
+                  "serine": zmean(["PHGDH", "PSAT1", "PSPH"], M),
+                  "prolif": zmean(["MKI67", "TOP2A", "MCM2", "PCNA", "CCNB1", "AURKA", "BIRC5", "CDK1"], M),
+                  "subtype": lab})
+
+print(d.groupby("subtype")[["glycolysis", "serine"]].median().round(2))
+b, l = d.loc[d["subtype"] == "Basal", "glycolysis"], d.loc[d["subtype"] == "LumB", "glycolysis"]
+print(f"Glycolysis, Basal minus LumB (median): {b.median() - l.median():.2f}, p = {mannwhitneyu(b, l).pvalue:.3g}")
+
+bs = d[d["subtype"] == "Basal"]
+rho, p = spearmanr(bs["glycolysis"], bs["serine"])
+print(f"Within Basal: glycolysis vs serine rho = {rho:.2f}, p = {p:.3g}")
+
+import statsmodels.formula.api as smf
+bs = bs.assign(g=(bs["glycolysis"]-bs["glycolysis"].mean())/bs["glycolysis"].std(),
+               s=(bs["serine"]-bs["serine"].mean())/bs["serine"].std(),
+               p=(bs["prolif"]-bs["prolif"].mean())/bs["prolif"].std())
+m = smf.ols("s ~ g + p", data=bs).fit()
+print(f"Serine ~ glycolysis + proliferation (Basal): glycolysis coef {m.params['g']:+.2f}, p = {m.pvalues['g']:.3g}")
+```
+
+glycolysis is higher in Basal, but its tie to serine inside Basal is weak once proliferation is accounted for.
+
+### Test whether hypoxia explains the serine-glycolysis link.
+
+```{python}
+def zmean(genes, mat):
+    g = [x for x in genes if x in mat.index]
+    print(f"  {len(g)} of {len(genes)} found: {g}")
+    e = mat.loc[g]
+    return e.sub(e.mean(axis=1), axis=0).div(e.std(axis=1), axis=0).mean(axis=0)
+
+hyp_genes  = ["CA9", "BNIP3", "NDRG1", "ADM", "VEGFA", "ANKRD37", "EGLN3", "P4HA1", "ERO1A", "BHLHE40"]
+glyc_genes = ["SLC2A1", "HK2", "GPI", "PFKP", "ALDOA", "GAPDH", "PGK1", "ENO1", "PKM", "LDHA"]
+prol_genes = ["MKI67", "TOP2A", "MCM2", "PCNA", "CCNB1", "AURKA", "BIRC5", "CDK1"]
+
+lab = sample["pam50_subtype"].reindex(all_counts.columns)
+ok = lab.isin(["Basal", "LumB"])
+ids = ok[ok].index
+M = all_counts.loc[:, ids]
+
+print("Hypoxia:");      hyp = zmean(hyp_genes, M)
+print("Glycolysis:");   gly = zmean(glyc_genes, M)
+print("Serine:");       ser = zmean(["PHGDH", "PSAT1", "PSPH"], M)
+print("Proliferation:"); pro = zmean(prol_genes, M)
+
+d = pd.DataFrame({"hyp": hyp, "gly": gly, "ser": ser, "pro": pro,
+                  "basal": (lab[ids] == "Basal").astype(int)})
+for c in ["hyp", "gly", "ser", "pro"]:
+    d[c] = (d[c] - d[c].mean()) / d[c].std()
+
+print("\nMedian by group (SD units):")
+print(d.groupby("basal")[["hyp", "gly", "ser", "pro"]].median().round(2))
+
+# A. Basal vs LumB gaps, with and without hypoxia + proliferation
+print("\nBasal vs LumB (SD units):")
+for o in ["gly", "ser"]:
+    m0 = smf.ols(f"{o} ~ basal", data=d).fit()
+    m1 = smf.ols(f"{o} ~ basal + pro", data=d).fit()
+    m2 = smf.ols(f"{o} ~ basal + pro + hyp", data=d).fit()
+    print(f"  {o}: unadjusted {m0.params['basal']:.2f} | + proliferation {m1.params['basal']:.2f} "
+          f"| + proliferation + hypoxia {m2.params['basal']:.2f} "
+          f"(95% CI {m2.conf_int().loc['basal'][0]:.2f} to {m2.conf_int().loc['basal'][1]:.2f})")
+
+# B. Within Basal: does glycolysis still relate to serine?
+b = d[d["basal"] == 1]
+rho, p = spearmanr(b["hyp"], b["ser"]);  print(f"\nWithin Basal: hypoxia vs serine rho = {rho:.2f} (p = {p:.2g})")
+rho, p = spearmanr(b["hyp"], b["gly"]);  print(f"Within Basal: hypoxia vs glycolysis rho = {rho:.2f} (p = {p:.2g})")
+
+for name, f in [("serine ~ glycolysis + proliferation", "ser ~ gly + pro"),
+                ("serine ~ glycolysis + proliferation + hypoxia", "ser ~ gly + pro + hyp")]:
+    m = smf.ols(f, data=b).fit()
+    print(f"{name}: glycolysis coef {m.params['gly']:+.2f} (p = {m.pvalues['gly']:.3g})"
+          + (f" | hypoxia coef {m.params['hyp']:+.2f} (p = {m.pvalues['hyp']:.3g})" if "hyp" in f else ""))
+```
+
+- The serine gap barely moves after adjusting for both proliferation and hypoxia. It is an intrinsic subtype feature, not just a downstream effect of fast division or low oxygen, as far as these scores can measure. This was the main risk to the claim, and it passed.
+
+- Within Basal, the serine score still tracks hypoxia a little (rho = 0.29), which is expected, since PHGDH is regulated by HIF in many cells.
+
+**Glycolysis and the Warburg link**
+
+- Glycolysis keeps only about a third of its Basal-vs-LumB gap once proliferation and hypoxia are in the model, so most of the higher glycolytic expression in Basal goes with those two programs. The gap is still positive (0.20 to 0.36), so it doesn’t disappear.
+
+- Within Basal, hypoxia and glycolysis correlate at rho = 0.80. These scores are close to measuring the same thing (many glycolytic enzymes are HIF targets), so adjusting one for the other probably over-corrects and removes real signal.
+
+- The serine-glycolysis link inside Basal drops from +0.07 (p = 0.056) to -0.04 (p = 0.54) once hypoxia is added, and hypoxia carries the weak signal (+0.11, p = 0.025). So there is no evidence that glycolysis and serine synthesis are directly coupled beyond the shared hypoxia and proliferation context.
