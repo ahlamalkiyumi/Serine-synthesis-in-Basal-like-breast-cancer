@@ -1,0 +1,87 @@
+---
+title: "title"
+format: html
+editor: visual
+jupyter: python3
+---
+
+## Goal: Test stress-response and amino-acid-metabolism in TCGA data
+
+```{python}
+import pandas as pd
+import numpy as np
+from scipy.stats import wilcoxon, mannwhitneyu, kruskal
+from statsmodels.stats.multitest import multipletests
+from scipy.stats import spearmanr, rankdata
+import statsmodels.formula.api as smf
+from statsmodels.stats.outliers_influence import variance_inflation_factor
+```
+
+```{python}
+data_filtered = pd.read_csv("data_filtered.csv", index_col=0)
+genes_metadata = pd.read_csv("tcga_brca_gene_metadata.csv",index_col=0)
+meta_sub = pd.read_csv("sample_metadata_with_subtype.csv",index_col=1)
+data_paired = pd.read_csv("data_paired.csv",index_col=0)
+```
+
+```{python}
+# Map Ensembl IDs to gene symbols 
+data_filtered["gene_symbol"] = data_filtered.index.map(genes_metadata["gene_name"])
+data_filtered = data_filtered.dropna(subset=["gene_symbol"])
+data_filtered = data_filtered.drop_duplicates(subset="gene_symbol", keep="first")
+data_filtered = data_filtered.set_index("gene_symbol")
+```
+
+```{python}
+cpm_all = data_filtered.div(data_filtered.sum(axis=0), axis=1) * 1e6
+logcpm_all = np.log2(cpm_all + 1)
+
+tum = meta_sub[(meta_sub["tcga.cgc_sample_sample_type"] == "Primary Tumor") &
+               meta_sub["BRCA_Subtype_PAM50"].isin(["Basal", "Her2", "LumA", "LumB"])]
+```
+
+### check if ranking replicates in TCGA
+
+```{python}
+def zmean(genes, mat):
+    g = [x for x in genes if x in mat.index]
+    e = mat.loc[g]
+    return e.sub(e.mean(axis=1), axis=0).div(e.std(axis=1), axis=0).mean(axis=0)
+
+ids = tum.index[tum["BRCA_Subtype_PAM50"] == "Basal"]
+ids = ids[ids.isin(logcpm_all.columns)]
+X = logcpm_all.loc[:, ids]
+X = X[(X.mean(axis=1) > 1) & (X.std(axis=1) > 0)]          # drop barely expressed genes
+print("Basal tumors:", len(ids), "| genes kept:", X.shape[0])
+
+ser = zmean(["PHGDH", "PSAT1", "PSPH"], logcpm_all.loc[:, ids]).values
+pro = zmean(["MKI67", "TOP2A", "MCM2", "PCNA", "CCNB1", "AURKA", "BIRC5", "CDK1"], logcpm_all.loc[:, ids]).values
+
+A = np.column_stack([np.ones(len(pro)), pro])
+proj = A @ np.linalg.inv(A.T @ A) @ A.T
+G = X.values
+G_res = G - G @ proj                                         # remove proliferation from every gene
+s_res = ser - proj @ ser                                      # and from the serine score
+
+Rg = np.apply_along_axis(rankdata, 1, G_res)
+Rs = rankdata(s_res)
+Rg = (Rg - Rg.mean(axis=1, keepdims=True)) / Rg.std(axis=1, keepdims=True)
+Rs = (Rs - Rs.mean()) / Rs.std()
+rho_tcga = pd.Series((Rg * Rs).mean(axis=1), index=X.index)
+rho_tcga = rho_tcga.drop(["PHGDH", "PSAT1", "PSPH"], errors="ignore")
+
+print("\nTCGA top 25:"); print(rho_tcga.sort_values(ascending=False).head(25).round(2))
+
+key = ["ASNS", "SHMT2", "CHAC1", "ATF4", "GPT2", "MTHFD2", "CBS", "ISYNA1", "MTHFD1L", "SFXN1", "SFXN2", "MKI67"]
+print("\nKey genes, TCGA partial rho:"); print(rho_tcga.reindex(key).round(2))
+
+scanb = pd.read_csv("scanb_basal_serine_partial_rho.csv").set_index("gene")["partial_rho"]
+both = pd.concat([scanb.rename("scanb"), rho_tcga.rename("tcga")], axis=1).dropna()
+r, p = spearmanr(both["scanb"], both["tcga"])
+print(f"\nGenes in both: {len(both)} | agreement across the whole ranking: rho = {r:.2f}")
+top = both["scanb"].sort_values(ascending=False).head(40).index
+print("Of the SCAN-B top 40, positive in TCGA:", int((both.loc[top, 'tcga'] > 0).sum()),
+      "| above 0.2 in TCGA:", int((both.loc[top, 'tcga'] > 0.2).sum()))
+```
+
+Within Basal-like tumors, serine synthesis expression tracked an amino-acid stress-response program (ASNS, CHAC1, TRIB3, SHMT2, MTHFD2, and aminoacyl-tRNA synthetases) after removing proliferation, in both SCAN-B (n = 360) and TCGA (n = 197).
